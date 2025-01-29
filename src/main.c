@@ -280,7 +280,59 @@ int main (void){
         }
     }
 
+    // calculate the third vector for local coordinate system for each cells 
+    double *local_coord = (double *)malloc (9*(size_t)nelem*sizeof(double));
+    for (int ele=0;ele<nelem;ele++){
+        double thrid_vec [3];
+        double first_vec [3] = {norm_grad[3*ele],norm_grad[3*ele+1],norm_grad[3*ele+2]};
+        double second_vec [3] = {normele[3*ele],normele[3*ele+1],normele[3*ele+2]};
+        crossProduct(first_vec,second_vec,thrid_vec);
+        local_coord [9*ele]=first_vec[0];
+        local_coord [9*ele+1]=first_vec[1];
+        local_coord [9*ele+2]=first_vec[2];
+        local_coord [9*ele+3]=second_vec[0];
+        local_coord [9*ele+4]=second_vec[1];
+        local_coord [9*ele+5]=second_vec[2];
+        local_coord [9*ele+6]=thrid_vec[0];
+        local_coord [9*ele+7]=thrid_vec[1];
+        local_coord [9*ele+8]=thrid_vec[2];
+    }
 
+    // save in VTK format
+    // coordinate 
+        M1->numExtraPoints = 3*nelem;
+        double *extra_ptxyz = calloc((size_t)M1->numExtraPoints * 3, sizeof(double));
+        // points for first vec 
+        for (int i = 0; i < (nelem* 3); i++)
+            extra_ptxyz[i] = cen[i];
+        // points for second vec 
+        for (int i = 0; i < (nelem* 3); i++)
+            extra_ptxyz[3*nelem+i] = cen[i];
+        // points for third vec    
+        for (int i = 0; i < (nelem* 3); i++)
+            extra_ptxyz[6*nelem+i] = cen[i];
+
+        M1->extra_ptxyz = extra_ptxyz;
+
+        double *new_normele = calloc(((size_t)M1->npoin + (size_t)M1->numExtraPoints) * 3, sizeof(double));
+        // First vector of each element
+        for (int i = 0; i < nelem; i++)
+        {
+            for (int j=0;j<3;j++)
+            new_normele[3*M1->npoin + 3*i+j] = local_coord[9*i+j];
+        }
+        // Second vector 
+        for (int i = 0; i < nelem; i++)
+        {
+            for (int j=0;j<3;j++)
+            new_normele[3*M1->npoin +3*nelem+ 3*i+j] = local_coord[9*i+3+j];
+        }
+        // Third vector 
+        for (int i = 0; i < nelem; i++)
+        {
+            for (int j=0;j<3;j++)
+            new_normele[3*M1->npoin +6*nelem+ 3*i+j] = local_coord[9*i+6+j];
+        }
 
     FunctionWithArgs prtelefield2[] =
         {
@@ -290,9 +342,12 @@ int main (void){
             {"norm_grad_u", 3, nelem, norm_grad, VEC_double_VTK},
         };
     size_t countele2 = sizeof(prtelefield2) / sizeof(prtelefield2[0]);
-    FunctionWithArgs prtpntfield2[] = {0};
-    size_t countpnt2 = 0;
+    FunctionWithArgs prtpntfield2[] = {
+        {"local_normal_vec", 3, (M1->npoin + M1->numExtraPoints), new_normele, VEC_double_VTK}
+    };
+    size_t countpnt2 = 1;
     CHECK_ERROR(SaveVTK("./", "checkmesh", 1, M1, tri3funcVTK, prtelefield2, countele2, prtpntfield2, countpnt2));
+    free (extra_ptxyz);free(new_normele);
 
 
 
