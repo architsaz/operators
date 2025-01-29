@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+// Operator
+#include "gradient.h"
 
 int main (void){
     int npoin, nelem, *elems;
@@ -42,11 +44,27 @@ int main (void){
         if (open[i]==0) opencount++;
     }
     (opencount==0) ? printf("! this is open mesh.\n") : printf("* this is close mesh.\n");
+    // calc norm of ele
+    double *normele;
+    CHECK_ERROR(save_normele(nelem,elems,ptxyz,&normele));
+    // flip the normal vector to be outward:
+    for (int ele = 0; ele < (3 * nelem); ele++)
+        normele[ele] = -1 * normele[ele];
     // calculate the centeroid of each element
     double *cen;
     CHECK_ERROR(save_centri3(nelem,elems,ptxyz,&cen));
     if (cen == NULL){
         fprintf(stderr,"Memory allocation (cen) failed.\n");
+        return 1;        
+    }
+    // calculate the center of each edge for each element
+    double *cenedge;
+    CHECK_ERROR(save_cenedgetri3(nelem,elems,ptxyz,&cenedge));
+    // calculate the normal vectors of edges
+    double *normedge;
+    CHECK_ERROR(save_normedge(nelem,ptxyz,elems,normele,&normedge)); 
+    if (normedge == NULL){
+        fprintf(stderr,"Memory allocation (normedge) failed.\n");
         return 1;        
     }
     // find a boundary condition
@@ -82,15 +100,79 @@ int main (void){
     }
     M1->elems =elems;M1->npoin =npoin;M1->nelem=nelem;M1->esure=esure;M1->esurp=esurp;M1->esurp_ptr=esurp_ptr;M1->nredge=Nredge;M1->open=open;M1->ptxyz=ptxyz;
     #ifdef DEBUG
+        // coordinate 
+            M1->numExtraPoints = nelem+3*nelem;
+            double *extra_ptxyz = calloc((size_t)M1->numExtraPoints * 3, sizeof(double));
+            // points for normal of elements
+            for (int i = 0; i < (nelem* 3); i++)
+                extra_ptxyz[i] = cen[i];
+            // // point for edge p1->p2 
+            // for (int i = 0; i < (nelem* 3); i++)
+            //     extra_ptxyz[3*nelem+i] = cen[i];
+            // // point for edge p2->p3    
+            // for (int i = 0; i < (nelem* 3); i++)
+            //     extra_ptxyz[6*nelem+i] = cen[i];
+            // // point for edge p3->p1    
+            // for (int i = 0; i < (nelem* 3); i++)
+            //     extra_ptxyz[9*nelem+i] = cen[i]; 
+            
+            // point for edge p1->p2 
+            for (int ele = 0; ele < nelem; ele++){
+                for (int i=0;i<3;i++)
+                extra_ptxyz[3*nelem+3*ele+i] = cenedge[9*ele+i];
+            }
+                
+            // point for edge p2->p3    
+            for (int ele = 0; ele < nelem; ele++){
+                for (int i=0;i<3;i++)
+                extra_ptxyz[6*nelem+3*ele+i] = cenedge[9*ele+3+i];
+            }
+            // point for edge p3->p1    
+            for (int ele = 0; ele < nelem; ele++){
+                for (int i=0;i<3;i++)
+                extra_ptxyz[9*nelem+3*ele+i] = cenedge[9*ele+6+i];
+            }
+
+            M1->extra_ptxyz = extra_ptxyz;
+
+            double *new_normele = calloc(((size_t)M1->npoin + (size_t)M1->numExtraPoints) * 3, sizeof(double));
+            // normal vector of each element
+            for (int i = 0; i < nelem; i++)
+            {
+                for (int j=0;j<3;j++)
+                new_normele[3*M1->npoin + 3*i+j] = normele[3*i+j];
+            }
+            // normal vector of edge1 p1 -> p2
+            for (int i = 0; i < nelem; i++)
+            {
+                for (int j=0;j<3;j++)
+                new_normele[3*M1->npoin +3*nelem+ 3*i+j] = normedge[9*i+j];
+            }
+            // normal vector of edge1 p2 -> p3
+            for (int i = 0; i < nelem; i++)
+            {
+                for (int j=0;j<3;j++)
+                new_normele[3*M1->npoin +6*nelem+ 3*i+j] = normedge[9*i+3+j];
+            }
+            // normal vector of edge1 p3 -> p1
+            for (int i = 0; i < nelem; i++)
+            {
+                for (int j=0;j<3;j++)
+                new_normele[3*M1->npoin +9*nelem+ 3*i+j] = normedge[9*i+6+j];
+            }
            FunctionWithArgs prtelefield[] =
             {
                 {"open", 1, nelem, open, SCA_int_VTK},
                 {"BC", 1, nelem, cell_stat, SCA_int_VTK},
             };
         size_t countele = sizeof(prtelefield) / sizeof(prtelefield[0]);
-        FunctionWithArgs prtpntfield[] = {0};
-        size_t countpnt = 0;
+        FunctionWithArgs prtpntfield[] = {
+            {"normal_vec", 3, (M1->npoin + M1->numExtraPoints), new_normele, VEC_double_VTK}
+        };
+        size_t countpnt = 1;
         CHECK_ERROR(SaveVTK("./", "checkmesh", 0, M1, tri3funcVTK, prtelefield, countele, prtpntfield, countpnt));
+        free (new_normele);
+        free (extra_ptxyz);
     #endif
     // define sparse matrix of coefficient
     int *row_ptr = (int *)calloc((size_t)(nelem + 1), sizeof(int));
@@ -178,16 +260,39 @@ int main (void){
     cpu_time_used = (double)(end_time - start_time) / CLOCKS_PER_SEC;
     printf("* CG Solver execution time : %.2f seconds\n", cpu_time_used);
 
+    // calculate the gradient scaler on each element
+    double *norm_grad;
+    CHECK_ERROR(gradient_ele_tri3(nelem,elems,ptxyz,esure,normedge,u,&norm_grad));
+    if (norm_grad == NULL ){
+        fprintf(stderr,"! ERROR: grad array is empty\n");
+        return -1;
+    }
+    for (int ele=0;ele<nelem;ele++){
+        double sum = 0;
+        sum += SQUARE (norm_grad[3*ele]);
+        sum += SQUARE (norm_grad[3*ele+1]);
+        sum += SQUARE (norm_grad[3*ele+2]);
+        sum = sqrt (sum);
+        if (sum != 0){
+        norm_grad [3*ele] /=  sum;
+        norm_grad [3*ele+1] /=  sum;
+        norm_grad [3*ele+2] /=  sum;
+        }
+    }
+
+
+
     FunctionWithArgs prtelefield2[] =
         {
             {"open", 1, nelem, open, SCA_int_VTK},
             {"BC", 1, nelem, cell_stat, SCA_int_VTK},
-            {"poisson", 1, nelem, u, SCA_double_VTK},
+            {"u", 1, nelem, u, SCA_double_VTK},
+            {"norm_grad_u", 3, nelem, norm_grad, VEC_double_VTK},
         };
     size_t countele2 = sizeof(prtelefield2) / sizeof(prtelefield2[0]);
     FunctionWithArgs prtpntfield2[] = {0};
     size_t countpnt2 = 0;
-    CHECK_ERROR(SaveVTK("./", "checkmesh", 0, M1, tri3funcVTK, prtelefield2, countele2, prtpntfield2, countpnt2));
+    CHECK_ERROR(SaveVTK("./", "checkmesh", 1, M1, tri3funcVTK, prtelefield2, countele2, prtpntfield2, countpnt2));
 
 
 
@@ -208,5 +313,9 @@ int main (void){
     free (M1);
     free (cell_stat);
     free (u);
+    free (cenedge);
+    free (normele);
+    free (normedge);
+    free (norm_grad);
     return 0; // success signal
 }
